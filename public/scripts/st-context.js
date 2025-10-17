@@ -55,12 +55,6 @@ import {
     generateRaw,
     showSwipeButtons,
     hideSwipeButtons,
-    deleteMessage,
-    refreshSwipeButtons,
-    isSwipingAllowed,
-    ensureMessageMediaIsArray,
-    getMediaDisplay,
-    getMediaIndex,
 } from '../script.js';
 import {
     extension_settings,
@@ -125,7 +119,6 @@ export function getContext() {
         eventTypes: event_types,
         addOneMessage,
         deleteLastMessage,
-        deleteMessage,
         generate: Generate,
         sendStreamingRequest,
         sendGenerationRequest,
@@ -212,16 +205,11 @@ export function getContext() {
         humanizedDateTime,
         updateMessageBlock,
         appendMediaToMessage,
-        ensureMessageMediaIsArray,
-        getMediaDisplay,
-        getMediaIndex,
         swipe: {
             left: swipe_left,
             right: swipe_right,
             show: showSwipeButtons,
             hide: hideSwipeButtons,
-            refresh: refreshSwipeButtons,
-            isAllowed: () => isSwipingAllowed,
         },
         variables: {
             local: {
