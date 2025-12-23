@@ -15,6 +15,8 @@
  * @property {boolean} filter - Whether the filter (`>`) flag is set.
  * @property {boolean} closingBlock - Whether the closing block (`/`) flag is set.
  * @property {boolean} preserveWhitespace - Whether the preserve whitespace (`#`) flag is set.
+ * @property {boolean} varDot - Whether the variable dot (`.`) flag is set.
+ * @property {boolean} varDollar - Whether the variable dollar (`$`) flag is set.
  * @property {string[]} raw - The raw flag symbols in order of appearance.
  */
 
@@ -72,8 +74,19 @@ export const MacroFlagType = Object.freeze({
      */
     PRESERVE_WHITESPACE: '#',
 
-    // Note: Variable shorthand (. and $) are NOT flags - they are special prefixes
-    // that trigger the variable expression parsing branch. See MacroLexer.js Var tokens.
+    /**
+     * Variable shorthand flag (`.`).
+     * Shorthand for variable access: `{{.myvar}}` equivalent to `{{getvar::myvar}}`.
+     * @status TBD - Not implemented in v1
+     */
+    VAR_DOT: '.',
+
+    /**
+     * Variable shorthand flag (`$`).
+     * Alternative shorthand for variable access: `{{$myvar}}`.
+     * @status TBD - Not implemented in v1
+     */
+    VAR_DOLLAR: '$',
 });
 
 /**
@@ -133,6 +146,20 @@ export const MacroFlagDefinitions = new Map([
         implemented: true,
         affectsParser: false,
     }],
+    [MacroFlagType.VAR_DOT, {
+        type: MacroFlagType.VAR_DOT,
+        name: 'Variable (dot)',
+        description: 'Shorthand for variable access using dot notation.',
+        implemented: false,
+        affectsParser: false,
+    }],
+    [MacroFlagType.VAR_DOLLAR, {
+        type: MacroFlagType.VAR_DOLLAR,
+        name: 'Variable (dollar)',
+        description: 'Shorthand for variable access using dollar notation.',
+        implemented: false,
+        affectsParser: false,
+    }],
 ]);
 
 /**
@@ -155,6 +182,8 @@ export function createEmptyFlags() {
         filter: false,
         closingBlock: false,
         preserveWhitespace: false,
+        varDot: false,
+        varDollar: false,
         raw: [],
     };
 }
@@ -187,6 +216,12 @@ export function parseFlags(flagSymbols) {
                 break;
             case MacroFlagType.PRESERVE_WHITESPACE:
                 flags.preserveWhitespace = true;
+                break;
+            case MacroFlagType.VAR_DOT:
+                flags.varDot = true;
+                break;
+            case MacroFlagType.VAR_DOLLAR:
+                flags.varDollar = true;
                 break;
             default:
                 console.warn(`Can't parse unknown macro flag: ${symbol}`);
