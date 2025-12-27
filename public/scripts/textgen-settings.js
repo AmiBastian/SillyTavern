@@ -23,7 +23,7 @@ import { power_user, registerDebugFunction } from './power-user.js';
 import { getActiveManualApiSamplers, loadApiSelectedSamplers, isSamplerManualPriorityEnabled } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { getEventSourceStream } from './sse-stream.js';
-import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer, loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels } from './textgen-models.js';
+import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer, loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels } from './textgen-models.js';
 import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, TOKENIZER_SUPPORTED_KEY, getTextTokens, tokenizers } from './tokenizers.js';
 import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
@@ -214,6 +214,7 @@ export const textgenerationwebui_settings = {
     aphrodite_model: '',
     dreamgen_model: 'lucid-v1-extra-large/text',
     tabby_model: '',
+    llamacpp_model: '',
     sampler_order: KOBOLDCPP_ORDER,
     logit_bias: [],
     n: 1,
@@ -701,6 +702,9 @@ async function getStatusTextgen() {
         } else if (textgenerationwebui_settings.type === textgen_types.TABBY) {
             loadTabbyModels(data?.data);
             setOnlineStatus(textgenerationwebui_settings.tabby_model || data?.result);
+        } else if (textgenerationwebui_settings.type === textgen_types.LLAMACPP) {
+            loadLlamaCppModels(data?.data);
+            setOnlineStatus(textgenerationwebui_settings.llamacpp_model || data?.result || t`Connected`);
         } else if (textgenerationwebui_settings.type === textgen_types.GENERIC) {
             loadGenericModels(data?.data);
             setOnlineStatus(textgenerationwebui_settings.generic_model || data?.result || t`Connected`);
@@ -1284,11 +1288,15 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
             if (data?.choices?.[0]?.index > 0) {
                 const swipeIndex = data.choices[0].index - 1;
                 swipes[swipeIndex] = (swipes[swipeIndex] || '') + data.choices[0].text;
+            } else if (data?.index > 0) {
+                // llama.cpp streaming swipe
+                const swipeIndex = data.index - 1;
+                swipes[swipeIndex] = (swipes[swipeIndex] || '') + data.content;
             } else {
                 const newText = data?.choices?.[0]?.text || data?.content || '';
                 text += newText;
                 logprobs = parseTextgenLogprobs(newText, data.choices?.[0]?.logprobs || data?.completion_probabilities);
-                state.reasoning += data?.choices?.[0]?.reasoning ?? '';
+                state.reasoning += data?.choices?.[0]?.reasoning ?? data?.choices?.[0]?.thinking ?? '';
             }
 
             yield { text, swipes, logprobs, toolCalls, state };
@@ -1456,6 +1464,11 @@ export function getTextGenModel(settings = null) {
         case TABBY:
             if (settings.tabby_model) {
                 return settings.tabby_model;
+            }
+            break;
+        case LLAMACPP:
+            if (settings.llamacpp_model) {
+                return settings.llamacpp_model;
             }
             break;
         default:
@@ -1724,7 +1737,7 @@ export function createTextGenGenerationData(settings, model, finalPrompt = null,
         params.dry_sequence_breakers = params.parseSequenceBreakers();
     }
 
-    if (settings.type === TABBY) {
+    if (settings.type === TABBY || settings.type === LLAMACPP) {
         params.n = canMultiSwipe ? settings.n : 1;
     }
 

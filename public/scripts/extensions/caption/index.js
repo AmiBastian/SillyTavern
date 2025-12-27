@@ -455,7 +455,7 @@ function isVideoCaptioningAvailable() {
         return false;
     }
 
-    return ['google', 'vertexai'].includes(extension_settings.caption.multimodal_api);
+    return ['google', 'vertexai', 'zai'].includes(extension_settings.caption.multimodal_api);
 }
 
 jQuery(async function () {
@@ -594,7 +594,7 @@ jQuery(async function () {
             const options = Array.from(dropdown.options);
             const response = await fetch(url, {
                 method: 'POST',
-                headers: getRequestHeaders(),
+                headers: getRequestHeaders({ omitContentType: true }),
             });
             if (!response.ok) {
                 return;

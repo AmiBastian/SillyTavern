@@ -4834,6 +4834,7 @@ function getModelOptions(quiet) {
         { id: 'aphrodite_model', api: 'textgenerationwebui', type: textgen_types.APHRODITE },
         { id: 'ollama_model', api: 'textgenerationwebui', type: textgen_types.OLLAMA },
         { id: 'tabby_model', api: 'textgenerationwebui', type: textgen_types.TABBY },
+        { id: 'llamacpp_model', api: 'textgenerationwebui', type: textgen_types.LLAMACPP },
         { id: 'featherless_model', api: 'textgenerationwebui', type: textgen_types.FEATHERLESS },
         { id: 'model_openai_select', api: 'openai', type: chat_completion_sources.OPENAI },
         { id: 'model_claude_select', api: 'openai', type: chat_completion_sources.CLAUDE },
@@ -5613,13 +5614,15 @@ export async function setSlashCommandAutoComplete(textarea, isFloating = false) 
     );
     return ac;
 }
-/**@type {HTMLTextAreaElement} */
-const sendTextarea = document.querySelector('#send_textarea');
-setSlashCommandAutoComplete(sendTextarea);
-sendTextarea.addEventListener('input', () => {
-    if (sendTextarea.value[0] == '/') {
-        sendTextarea.style.fontFamily = 'var(--monoFontFamily, monospace)';
-    } else {
-        sendTextarea.style.fontFamily = null;
-    }
-});
+
+export async function initSlashCommandAutoComplete() {
+    const sendTextarea = /** @type {HTMLTextAreaElement} */ (document.querySelector('#send_textarea'));
+    setSlashCommandAutoComplete(sendTextarea);
+    sendTextarea.addEventListener('input', () => {
+        if (sendTextarea.value && sendTextarea.value[0] == '/') {
+            sendTextarea.style.fontFamily = 'var(--monoFontFamily, monospace)';
+        } else {
+            sendTextarea.style.fontFamily = null;
+        }
+    });
+}
