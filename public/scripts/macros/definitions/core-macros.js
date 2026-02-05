@@ -4,7 +4,20 @@ import { getStringHash, isFalseBoolean } from '../../utils.js';
 import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';
 import { inject_ids } from '../../constants.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
-import { MacroEngine } from '../engine/MacroEngine.js';
+import { MACRO_VARIABLE_SHORTHAND_PATTERN } from '../engine/MacroLexer.js';
+import { MacroParser } from '../engine/MacroParser.js';
+import { MacroCstWalker } from '../engine/MacroCstWalker.js';
+
+/**
+ * Marker used by {{else}} to split content in {{if}} blocks.
+ * Uses control characters to minimize collision with real content.
+ *
+ * This marker is used internally by the macro engine to separate if/else branches.
+ * It should never appear in user-generated content.
+ *
+ * @type {string}
+ */
+export const ELSE_MARKER = '\u0000\u001FELSE\u001F\u0000';
 
 /**
  * Registers SillyTavern's core built-in macros in the MacroRegistry.
@@ -80,21 +93,51 @@ export function registerCoreMacros() {
         },
     });
 
-    // Marker used by {{else}} to split content in {{if}} blocks
-    // Uses control characters to minimize collision with real content
-    const ELSE_MARKER = '\u0000\u001FELSE\u001F\u0000';
+    /**
+     * Splits raw content on the first {{else}} macro at nesting depth 0.
+     * Tracks scoped {{if}}/{{/if}} pairs to find the correct top-level else.
+     * Only {{if}} with 1 argument (condition only) are considered scoped blocks.
+     *
+     * @param {string} content - The raw content to split
+     * @returns {{ thenBranch: string, elseBranch: string | undefined }}
+     */
+    function splitOnTopLevelElse(content) {
+        const { cst } = MacroParser.parseDocument(content);
+        const macroNodes = /** @type {import('chevrotain').CstNode[]} */ (cst?.children?.macro || []);
+
+        let depth = 0;
+        for (const macroNode of macroNodes) {
+            const info = MacroCstWalker.extractMacroInfo(macroNode);
+            if (!info) continue;
+
+            // Only track scoped {{if}} blocks (1 arg = condition only, expects {{/if}})
+            // Inline {{if condition::content}} has 2 args and doesn't affect depth
+            if (info.name === 'if' && !info.isClosing && info.argCount === 1) {
+                depth++;
+            } else if (info.name === 'if' && info.isClosing) {
+                depth--;
+            } else if (info.name === 'else' && depth === 0) {
+                return {
+                    thenBranch: content.slice(0, info.startOffset),
+                    elseBranch: content.slice(info.endOffset + 1),
+                };
+            }
+        }
+
+        return { thenBranch: content, elseBranch: undefined };
+    }
 
     // {{if condition}}content{{/if}} -> conditional content
     // {{if condition}}then-content{{else}}else-content{{/if}} -> conditional with else branch
     // {{if !condition}}content{{/if}} -> inverted conditional (negated)
-    // Condition can be a macro name (resolved automatically) or any value
+    // Condition can be a macro name (resolved automatically), variable shorthand (.var or $var), or any value
     MacroRegistry.registerMacro('if', {
         category: MacroCategory.UTILITY,
-        description: 'Conditional macro. Returns the content if the condition is truthy, otherwise returns nothing (or the else branch if present). Prefix the condition with ! to invert. If the condition is a registered macro name (without braces), it will be resolved first.',
+        description: 'Conditional macro. Returns the content if the condition is truthy, otherwise returns nothing (or the else branch if present). Prefix the condition with ! to invert. If the condition is a registered macro name (without braces), it will be resolved first. Variable shorthands (.varname for local, $varname for global) are also supported.',
         unnamedArgs: [
             {
                 name: 'condition',
-                description: 'The condition to evaluate. Prefix with ! to invert. Can be a macro name (auto-resolved) or a value. Falsy: empty string, "false", "off", "0".',
+                description: 'The condition to evaluate. Prefix with ! to invert. Can be a macro name (auto-resolved), variable shorthand (.var or $var), or a value. Falsy: empty string, "false", "off", "0".',
             },
             {
                 name: 'content',
@@ -107,42 +150,65 @@ export function registerCoreMacros() {
             '{{if charVersion}}{{charVersion}}{{else}}No version{{/if}}',
             '{{if !personality}}No personality defined{{/if}}',
             '{{if {{getvar::showHeader}}}}# Header{{/if}}',
+            '{{if .myvar}}Local var exists{{/if}}',
+            '{{if $globalFlag}}Global flag is set{{/if}}',
         ],
         returns: 'The content if condition is truthy, else branch or empty string otherwise.',
-        handler: ({ unnamedArgs: [condition, content], rawArgs: [rawCondition], flags, env }) => {
-            // Check if the ORIGINAL condition (before macro resolution) starts with !
-            // We use raw args to check this, as the resolved value might start with ! from a variable
+        // Delay argument resolution so nested macros are only evaluated in the chosen branch
+        delayArgResolution: true,
+        handler: ({ unnamedArgs: [rawCondition, rawContent], flags, resolve, trimContent }) => {
+            // With delayArgResolution: true, args contain raw (unresolved) text.
+            // We resolve the condition first, then only resolve the chosen branch.
+
+            // Check if the condition starts with ! for inversion
             let inverted = false;
+            let condition = rawCondition;
             if (/^\s*!/.test(rawCondition)) {
                 inverted = true;
-                // Strip the ! from the resolved condition if it was the prefix
-                condition = condition.replace(/^!/, '');
+                condition = rawCondition.replace(/^\s*!\s*/, '');
             }
 
-            // Check if condition is a registered macro name (without braces)
-            // If so, resolve it first (only for macros that accept 0 required args)
-            const macroDef = MacroRegistry.getPrimaryMacro(condition);
-            if (macroDef && macroDef.minArgs === 0) {
-                // Use MacroEngine.evaluate to properly resolve the macro with full context
-                // This ensures all handler args (cst, normalize, list, etc.) are correctly provided
-                condition = MacroEngine.evaluate(`{{${condition}}}`, env);
+            // Resolve the condition (may contain nested macros like {{getvar::x}})
+            condition = resolve(condition);
+
+            // Check if condition is a variable shorthand (.varname or $varname)
+            // If so, resolve it using the appropriate variable macro
+            const varShorthandRegex = new RegExp(`^([.$])(${MACRO_VARIABLE_SHORTHAND_PATTERN.source})$`);
+            const varShorthandMatch = condition.match(varShorthandRegex);
+            if (varShorthandMatch) {
+                const [, prefix, varName] = varShorthandMatch;
+                const varMacro = prefix === '.' ? 'getvar' : 'getglobalvar';
+                condition = resolve(`{{${varMacro}::${varName}}}`);
+            } else {
+                // Check if condition is a registered macro name (without braces)
+                // If so, resolve it first (only for macros that accept 0 required args)
+                const macroDef = MacroRegistry.getPrimaryMacro(condition);
+                if (macroDef && macroDef.minArgs === 0) {
+                    condition = resolve(`{{${condition}}}`);
+                }
             }
 
             // Check if condition is falsy: empty string or isFalseBoolean
             let isFalsy = condition === '' || isFalseBoolean(condition);
             if (inverted) isFalsy = !isFalsy;
 
-            // Split content on else marker (if present)
-            const [thenBranch, elseBranch] = content.split(ELSE_MARKER);
-            const result = !isFalsy ? thenBranch : elseBranch;
+            // Split raw content on {{else}} macro at the top nesting level
+            // We need to track nesting depth to find the correct {{else}} for this if
+            const { thenBranch, elseBranch } = splitOnTopLevelElse(rawContent);
 
-            // Trim branches unless # flag is set (preserveWhitespace)
-            // The engine auto-trims the whole scoped content, but we still need to trim
-            // around the {{else}} marker since that's internal to this macro
-            if (flags.preserveWhitespace) {
-                return result ?? '';
+            // Only resolve the chosen branch
+            const chosenBranch = !isFalsy ? thenBranch : elseBranch;
+            if (chosenBranch === undefined) {
+                return '';
             }
-            return (result ?? '').trim();
+
+            // Resolve nested macros in the chosen branch
+            // Trim result unless # flag is set (preserveWhitespace)
+            let result = resolve(chosenBranch);
+            if (!flags.preserveWhitespace) {
+                result = trimContent(result);
+            }
+            return result;
         },
     });
 
@@ -195,6 +261,13 @@ export function registerCoreMacros() {
     MacroRegistry.registerMacro('//', {
         aliases: [{ alias: 'comment', visible: false }],
         category: MacroCategory.UTILITY,
+        unnamedArgs: [
+            {
+                name: 'comment',
+                type: MacroValueType.STRING,
+                description: 'Any kind of text as comment. If you want multiline comments, consider using a scoped macro like {{//}}First\nSecond{{///}}.',
+            },
+        ],
         list: true,         // We consume any arguments as if this is a list, but we'll ignore them in the handler anyway
         strictArgs: false,  // and we also always remove it, even if the parsing might say it's invalid
         description: 'Comment macro that produces an empty string. Can be used for writing into prompt definitions, without being passed to the context.',
@@ -224,7 +297,7 @@ export function registerCoreMacros() {
             '{{roll::6}}',
             '{{roll::3d6+4}}',
         ],
-        handler: ({ unnamedArgs: [formula] }) => {
+        handler: ({ unnamedArgs: [formula], warn }) => {
             // If only digits were provided, treat it as `1dX`.
             if (/^\d+$/.test(formula)) {
                 formula = `1d${formula}`;
@@ -232,7 +305,7 @@ export function registerCoreMacros() {
 
             const isValid = droll.validate(formula);
             if (!isValid) {
-                console.debug(`Invalid roll formula: ${formula}`);
+                warn(`Invalid roll formula: ${formula}`);
                 return '';
             }
 
@@ -269,10 +342,15 @@ export function registerCoreMacros() {
     MacroRegistry.registerMacro('pick', {
         category: MacroCategory.RANDOM,
         list: true,
-        description: 'Picks a random item from a list, but keeps the choice stable for a given chat and macro position.',
+        description: 'Picks a random item from a list, but keeps the choice stable for a given chat and macro position. Can be rerolled via /reroll-pick slash command.',
+        // TODO: add expanded documentation once HTML details are supported
+        // descriptionDetails: `
+        //     <p>Picks a random item from a list, but keeps the choice stable for a given chat and macro position.</p>
+        //     <p>The choice can be reset per chat using the <code>/reroll-pick</code> slash command.</p>
+        // `,
         returns: 'Stable randomly selected item from the list.',
         exampleUsage: ['{{pick::blonde::brown::red::black::blue}}'],
-        handler: ({ list, range, env }) => {
+        handler: ({ list, globalOffset, env }) => {
             // Handle old legacy cases, where we have to split the list manually
             if (list.length === 1) {
                 list = readSingleArgsRandomList(list[0]);
@@ -282,14 +360,24 @@ export function registerCoreMacros() {
                 return '';
             }
 
+            // NOTE:
+            // When changing the hashing logic, make sure to update unit test functionality
+            // in registerTestablePick() to be identical.
+
             const chatIdHash = getChatIdHash();
 
             // Use the full original input string for deterministic behavior
             const rawContentHash = env.contentHash;
 
-            const offset = typeof range?.startOffset === 'number' ? range.startOffset : 0;
+            // Use globalOffset for deterministic seeding - this ensures identical macros
+            // at different positions in the document produce different results, even when
+            // nested inside arguments or scoped content
+            const offset = globalOffset;
 
-            const combinedSeedString = `${chatIdHash}-${rawContentHash}-${offset}`;
+            // Reroll seed allows users to reset all picks in the chat via /reroll-pick command
+            const rerollSeed = chat_metadata.pick_reroll_seed || null;
+
+            const combinedSeedString = [chatIdHash, rawContentHash, offset, rerollSeed].filter(it => it !== null).join('-');
             const finalSeed = getStringHash(combinedSeedString);
             const rng = seedrandom(String(finalSeed));
             const randomIndex = Math.floor(rng() * list.length);
@@ -319,11 +407,11 @@ export function registerCoreMacros() {
             {
                 name: 'word',
                 sampleValue: 'word',
-                description: 'Word to ban for textgenerationwebui backend.',
+                description: 'Word to ban for Text Completion backend.',
                 type: 'string',
             },
         ],
-        description: 'Bans a word for textgenerationwebui backend. (Strips quotes surrounding the banned word, if present)',
+        description: 'Bans a word for Text Completion backend. (Strips quotes surrounding the banned word, if present)',
         returns: '',
         exampleUsage: ['{{banned::delve}}'],
         handler: ({ unnamedArgs: [bannedWord] }) => {
@@ -360,13 +448,13 @@ export function registerCoreMacros() {
 }
 
 function getChatIdHash() {
-    const cachedIdHash = chat_metadata['chat_id_hash'];
+    const cachedIdHash = chat_metadata.chat_id_hash;
     if (typeof cachedIdHash === 'number') {
         return cachedIdHash;
     }
 
-    const chatId = chat_metadata['main_chat'] ?? getCurrentChatId();
+    const chatId = chat_metadata.main_chat ?? getCurrentChatId();
     const chatIdHash = getStringHash(chatId);
-    chat_metadata['chat_id_hash'] = chatIdHash;
+    chat_metadata.chat_id_hash = chatIdHash;
     return chatIdHash;
 }

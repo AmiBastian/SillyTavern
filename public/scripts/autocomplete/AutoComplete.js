@@ -155,6 +155,10 @@ export class AutoComplete {
      */
     updateName(item) {
         const chars = Array.from(item.dom.querySelector('.name').children);
+        if (item.forceFullNameMatch) {
+            chars.forEach(c => c.classList.toggle('matched', true));
+            return;
+        }
         switch (this.matchType) {
             case 'strict': {
                 chars.forEach((it, idx) => {
@@ -275,6 +279,7 @@ export class AutoComplete {
         //TODO check if isInput and isForced are both required
         this.text = this.textarea.value;
         this.isReplaceable = false;
+        this.isShowForced = isForced; // Store forced state for checkIfActivate to access
 
         if (document.activeElement != this.textarea) {
             // only show with textarea in focus
@@ -442,7 +447,7 @@ export class AutoComplete {
         } else if (!this.isReplaceable && this.result.length > 1) {
             return this.hide();
         }
-        this.selectedItem = this.result[0];
+        this.selectedItem = this.selectDefaultItem(this.result);
         this.isActive = true;
         this.wasForced = isForced;
         this.renderDebounced();
@@ -600,7 +605,22 @@ export class AutoComplete {
         if (location.bottom < rect.top || location.top > rect.bottom || location.left < rect.left || location.left > rect.right) {
             return this.hide();
         }
-        const left = Math.max(rect.left, location.left) - layerRect.left;
+        let left = Math.max(rect.left, location.left) - layerRect.left;
+
+        // Check if the autocomplete list is constrained by the right edge of the viewport.
+        // If so, adjust the details panel position to align with the actual list position.
+        // Only do this when the list is actually visible (isReplaceable).
+        if (this.isReplaceable) {
+            const listRect = this.dom.getBoundingClientRect();
+            const listActualLeft = listRect.left - layerRect.left;
+            const isConstrainedRight = listActualLeft < left - 5; // 5px tolerance
+
+            if (isConstrainedRight) {
+                // Use the actual list position instead of cursor position
+                left = listActualLeft;
+            }
+        }
+
         this.detailsWrap.style.setProperty('--targetOffset', `${left}`);
         if (this.isReplaceable) {
             this.detailsWrap.classList.remove('full');
@@ -692,8 +712,10 @@ export class AutoComplete {
      */
     async select() {
         if (this.isReplaceable && this.selectedItem.value !== null) {
-            this.textarea.value = `${this.text.slice(0, this.effectiveParserResult.start)}${this.selectedItem.replacer}${this.text.slice(this.effectiveParserResult.start + this.effectiveParserResult.name.length + (this.startQuote ? 1 : 0) + (this.endQuote ? 1 : 0))}`;
-            this.textarea.selectionStart = this.effectiveParserResult.start + this.selectedItem.replacer.length;
+            // Apply per-option replacement offset (e.g., for closing tags that need to replace leading whitespace)
+            const effectiveStart = this.effectiveParserResult.start + (this.selectedItem.replacementStartOffset ?? 0);
+            this.textarea.value = `${this.text.slice(0, effectiveStart)}${this.selectedItem.replacer}${this.text.slice(this.effectiveParserResult.start + this.effectiveParserResult.name.length + (this.startQuote ? 1 : 0) + (this.endQuote ? 1 : 0))}`;
+            this.textarea.selectionStart = effectiveStart + this.selectedItem.replacer.length;
             this.textarea.selectionEnd = this.textarea.selectionStart;
             this.show(false, false, true);
         } else {
@@ -707,6 +729,24 @@ export class AutoComplete {
         this.onSelect?.(this.selectedItem);
     }
 
+
+    /**
+     * Select the default item for the autocomplete list.
+     * Selects the first selectable item if any is present, or falls back to the last item.
+     * (To preserve context of where we are with multiple non-selectable options, if they are present for info)
+     * @param {AutoCompleteOption[]} result The list of autocomplete options.
+     * @returns {AutoCompleteOption} The item to select.
+     */
+    selectDefaultItem(result) {
+        if (result.length === 0) return null;
+
+        // Find first selectable item
+        const firstSelectable = result.find(it => it.isSelectable);
+        if (firstSelectable) return firstSelectable;
+
+        // Fall back to last item
+        return result[result.length - 1];
+    }
 
     /**
      * Mark the item at newIdx in the autocomplete list as selected.
