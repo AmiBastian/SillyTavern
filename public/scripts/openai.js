@@ -4821,6 +4821,7 @@ function getZaiMaxContext(model, isUnlocked) {
     }
 
     const contextMap = {
+        'glm-5': max_200k,
         'glm-4.7': max_200k,
         'glm-4.7-flash': max_200k,
         'glm-4.7-flashx': max_200k,
@@ -5285,7 +5286,7 @@ async function onModelChange() {
         if (oai_settings.max_context_unlocked) {
             $('#openai_max_context').attr('max', unlocked_max);
         }
-        else if (value.startsWith('claude-sonnet-4-5')) {
+        else if (value.startsWith('claude-sonnet-4-5') || value.startsWith('claude-opus-4-6')) {
             $('#openai_max_context').attr('max', max_1mil);
         }
         else if (value == 'claude-2.1' || value.startsWith('claude-3') || value.startsWith('claude-opus') || value.startsWith('claude-haiku') || value.startsWith('claude-sonnet')) {
