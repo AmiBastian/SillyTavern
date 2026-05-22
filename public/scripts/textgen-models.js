@@ -267,6 +267,10 @@ const NANOGPT_PROVIDERS = [
         'label': 'Tensorix',
     },
     {
+        'id': 'tensorix',
+        'label': 'Tensorix',
+    },
+    {
         'id': 'nextbit',
         'label': 'NextBit',
     },
