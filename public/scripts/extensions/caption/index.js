@@ -50,6 +50,11 @@ function migrateSettings() {
             ?? extension_settings.caption.multimodal_model;
     }
 
+    if (['google', 'vertexai'].includes(extension_settings.caption.multimodal_api)) {
+        extension_settings.caption.multimodal_model = GOOGLE_MODEL_MIGRATIONS.get(extension_settings.caption.multimodal_model)
+            ?? extension_settings.caption.multimodal_model;
+    }
+
     if (!extension_settings.caption.multimodal_api) {
         extension_settings.caption.multimodal_api = 'openai';
     }
